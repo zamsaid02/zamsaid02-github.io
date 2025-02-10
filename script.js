@@ -174,24 +174,28 @@ class POSSystem {
 
         productsGrid.innerHTML = `
             <div class="products-container">
-                ${currentProducts.map(product => `
-                    <div class="product-card" data-id="${product.id}">
-                        <div class="product-image">
-                            ${product.gambar_produk ? 
-                                `<img src="${product.gambar_produk}" alt="${product.nama_produk}" onerror="this.src='images/no-image.png'">` : 
-                                `<img src="images/no-image.png" alt="No Image">`
-                            }
+                ${currentProducts.map(product => {
+                    const isInCart = this.cart.some(item => item.id === product.id);
+                    return `
+                        <div class="product-card" data-id="${product.id}">
+                            <div class="product-image">
+                                ${product.gambar_produk ? 
+                                    `<img src="${product.gambar_produk}" alt="${product.nama_produk}" onerror="this.src='images/no-image.png'">` : 
+                                    `<img src="images/no-image.png" alt="No Image">`
+                                }
+                            </div>
+                            <div class="product-info">
+                                <h3>${product.nama_produk}</h3>
+                                <p class="price">Rp ${this.formatNumber(product.harga)}</p>
+                                <p class="stock">Stok: ${product.stok} ${product.satuan || 'pcs'}</p>
+                                <button onclick="window.pos.addToCart(${JSON.stringify(product).replace(/"/g, '&quot;')})"
+                                    class="${isInCart ? 'in-cart' : ''}">
+                                    ${isInCart ? 'Dalam Keranjang' : 'Tambah ke Keranjang'}
+                                </button>
+                            </div>
                         </div>
-                        <div class="product-info">
-                            <h3>${product.nama_produk}</h3>
-                            <p class="price">Rp ${this.formatNumber(product.harga)}</p>
-                            <p class="stock">Stok: ${product.stok} ${product.satuan || 'pcs'}</p>
-                            <button onclick="window.pos.addToCart(${JSON.stringify(product).replace(/"/g, '&quot;')})">
-                                Tambah ke Keranjang
-                            </button>
-                        </div>
-                    </div>
-                `).join('')}
+                    `;
+                }).join('')}
             </div>
             ${this.createPagination(totalPages)}
         `;
@@ -365,6 +369,21 @@ class POSSystem {
         const total = this.cart.reduce((sum, item) => sum + (item.harga * item.quantity), 0);
         cartTotal.textContent = `Rp ${this.formatNumber(total)}`;
         document.getElementById('checkoutBtn').disabled = false;
+
+        // Update tampilan tombol di produk
+        const productButtons = document.querySelectorAll('.product-card button');
+        productButtons.forEach(button => {
+            const productId = parseInt(button.closest('.product-card').dataset.id);
+            const isInCart = this.cart.some(item => item.id === productId);
+            
+            if (isInCart) {
+                button.classList.add('in-cart');
+                button.textContent = 'Dalam Keranjang';
+            } else {
+                button.classList.remove('in-cart');
+                button.textContent = 'Tambah ke Keranjang';
+            }
+        });
     }
 
     decreaseQuantity(itemId) {
@@ -417,6 +436,13 @@ class POSSystem {
                     this.cart.splice(index, 1);
                     this.updateCartDisplay();
                     this.updateCartBadge();
+                    
+                    // Update tampilan tombol produk yang dihapus
+                    const productButton = document.querySelector(`.product-card[data-id="${itemId}"] button`);
+                    if (productButton) {
+                        productButton.classList.remove('in-cart');
+                        productButton.textContent = 'Tambah ke Keranjang';
+                    }
                 }
             }
         } catch (error) {
@@ -449,51 +475,80 @@ class POSSystem {
         }
     }
 
-    loadStoreInfo() {
+    async loadStoreInfo() {
         return new Promise((resolve, reject) => {
-            const callbackName = 'handleStoreInfo_' + Date.now();
-            let timeoutId;
-
-            window[callbackName] = (response) => {
-                clearTimeout(timeoutId);
-                try {
-                    if (response.status === 'success' && response.data) {
-                        this.waNumber = response.data.waNumber;
-                        this.storeAddress = response.data.address;
-                        this.website = response.data.website;
-                        this.storeName = response.data.storeName;
-                        this.bankAccount = response.data.bankAccount;
-                        console.log('Store info loaded:', response.data);
-                        resolve(response.data);
-                    } else {
-                        const error = new Error(response.message || 'Gagal memuat informasi toko');
-                        console.error('Store info error:', error);
-                        reject(error);
-                    }
-                } catch (error) {
-                    console.error('Error processing store info:', error);
-                    reject(error);
-                } finally {
-                    this.cleanupCallback(callbackName);
-                }
-            };
-
-            const script = document.createElement('script');
-            script.src = `${this.SCRIPT_URL}?action=getStoreInfo&callback=${callbackName}&t=${Date.now()}`;
+            const maxRetries = 3; // Jumlah maksimal percobaan
+            let attempt = 0;
             
-            timeoutId = setTimeout(() => {
-                this.cleanupCallback(callbackName);
-                reject(new Error('Timeout memuat informasi toko'));
-            }, 10000);
+            const tryLoadStoreInfo = () => {
+                attempt++;
+                const callbackName = 'handleStoreInfo_' + Date.now();
+                let timeoutId;
 
-            script.onerror = () => {
-                clearTimeout(timeoutId);
-                this.cleanupCallback(callbackName);
-                reject(new Error('Gagal memuat script informasi toko'));
+                window[callbackName] = (response) => {
+                    clearTimeout(timeoutId);
+                    try {
+                        if (response.status === 'success' && response.data) {
+                            this.waNumber = response.data.waNumber;
+                            this.storeAddress = response.data.address;
+                            this.website = response.data.website;
+                            this.storeName = response.data.storeName;
+                            this.bankAccount = response.data.bankAccount;
+                            
+                            // Update judul di navbar
+                            const storeTitle = document.getElementById('storeName');
+                            if (storeTitle) {
+                                storeTitle.textContent = this.storeName || 'TOKO-KU';
+                            }
+                            
+                            // Update nama toko di struk
+                            const strukStoreName = document.getElementById('strukStoreName');
+                            if (strukStoreName) {
+                                strukStoreName.textContent = this.storeName || 'TOKO-KU';
+                            }
+                            
+                            console.log('Store info loaded:', response.data);
+                            resolve(response.data);
+                        } else {
+                            throw new Error(response.message || 'Gagal memuat informasi toko');
+                        }
+                    } catch (error) {
+                        this.handleStoreInfoError(error, attempt, maxRetries, tryLoadStoreInfo, reject);
+                    } finally {
+                        this.cleanupCallback(callbackName);
+                    }
+                };
+
+                const script = document.createElement('script');
+                script.src = `${this.SCRIPT_URL}?action=getStoreInfo&callback=${callbackName}&t=${Date.now()}`;
+                
+                timeoutId = setTimeout(() => {
+                    this.cleanupCallback(callbackName);
+                    this.handleStoreInfoError(new Error('Timeout memuat informasi toko'), attempt, maxRetries, tryLoadStoreInfo, reject);
+                }, 15000); // Perpanjang timeout menjadi 15 detik
+
+                script.onerror = () => {
+                    clearTimeout(timeoutId);
+                    this.cleanupCallback(callbackName);
+                    this.handleStoreInfoError(new Error('Gagal memuat script informasi toko'), attempt, maxRetries, tryLoadStoreInfo, reject);
+                };
+
+                document.body.appendChild(script);
             };
 
-            document.body.appendChild(script);
+            tryLoadStoreInfo();
         });
+    }
+
+    handleStoreInfoError(error, attempt, maxRetries, retryFn, reject) {
+        console.error(`Attempt ${attempt} failed:`, error);
+        if (attempt < maxRetries) {
+            console.log(`Retrying... (${attempt + 1}/${maxRetries})`);
+            setTimeout(retryFn, 2000 * attempt); // Exponential backoff
+        } else {
+            console.error('Max retries reached');
+            reject(error);
+        }
     }
 
     cleanupCallback(callbackName) {
@@ -538,6 +593,13 @@ class POSSystem {
             };
             
             this.showStruk(strukData);
+            
+            // Reset semua tombol "Dalam Keranjang" menjadi "Tambah ke Keranjang"
+            const productButtons = document.querySelectorAll('.product-card button');
+            productButtons.forEach(button => {
+                button.classList.remove('in-cart');
+                button.textContent = 'Tambah ke Keranjang';
+            });
             
             // Reset keranjang dan form pembeli
             this.cart = [];
@@ -910,7 +972,7 @@ class POSSystem {
             const tanggal = document.getElementById('tanggalStruk').textContent;
 
             // Buat pesan WhatsApp
-            let message = `*${this.storeName || 'BOUQUET MIS-RIN'}*\n`;
+            let message = `*${this.storeName || 'TOKO'}*\n`;
             message += `${noStruk}\n`;
             message += `${tanggal}\n\n`;
             message += `${buyerName}\n`;
